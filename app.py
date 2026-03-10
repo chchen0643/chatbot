@@ -166,6 +166,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_title" not in st.session_state:
     st.session_state.session_title = "新對話"
+if "editing_msg_index" not in st.session_state:
+    st.session_state.editing_msg_index = None
 
 
 # ============================
@@ -328,13 +330,77 @@ st.title("🤖 Gemini 多模態聊天機器人")
 st.caption("支援文字對話、圖片分析、PDF 摘要、文字檔解讀")
 
 # --- 顯示歷史訊息 ---
-for msg in st.session_state.messages:
+for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "images" in msg:
-            for img_info in msg["images"]:
-                # images 存的是 (base64_data, filename) 方便 JSON 序列化
-                st.image(base64.b64decode(img_info["data"]), caption=img_info["name"], use_container_width=True)
+        # 若正在編輯這則使用者訊息
+        if msg["role"] == "user" and st.session_state.editing_msg_index == i:
+            edited_text = st.text_area(
+                "編輯訊息",
+                value=msg["content"],
+                key=f"edit_area_{i}",
+                height=120,
+            )
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                if st.button("✅ 確認送出", key=f"confirm_edit_{i}", use_container_width=True, type="primary"):
+                    st.session_state.edited_text = edited_text
+                    st.session_state.confirm_edit_index = i
+                    st.session_state.editing_msg_index = None
+                    st.rerun()
+            with col_cancel:
+                if st.button("❌ 取消", key=f"cancel_edit_{i}", use_container_width=True):
+                    st.session_state.editing_msg_index = None
+                    st.rerun()
+        else:
+            st.markdown(msg["content"])
+            if "images" in msg:
+                for img_info in msg["images"]:
+                    st.image(base64.b64decode(img_info["data"]), caption=img_info["name"], use_container_width=True)
+            # 為使用者訊息顯示編輯按鈕
+            if msg["role"] == "user" and st.session_state.editing_msg_index is None:
+                if st.button("✏️", key=f"edit_btn_{i}", help="編輯此訊息並重新產生回應"):
+                    st.session_state.editing_msg_index = i
+                    st.rerun()
+
+# --- 處理確認編輯 ---
+if getattr(st.session_state, "confirm_edit_index", None) is not None:
+    edit_idx = st.session_state.confirm_edit_index
+    edited_text = st.session_state.edited_text
+    # 更新訊息內容
+    st.session_state.messages[edit_idx]["content"] = edited_text
+    # 截斷：移除該訊息之後的所有訊息
+    st.session_state.messages = st.session_state.messages[: edit_idx + 1]
+    # 重新生成 AI 回應
+    llm = create_chatbot()
+    content_parts = [{"type": "text", "text": edited_text}]
+    human_msg = HumanMessage(content=content_parts)
+
+    lc_messages = [SystemMessage(content=active_system_prompt)]
+    for prev_msg in st.session_state.messages[:-1]:
+        if prev_msg["role"] == "user":
+            lc_messages.append(HumanMessage(content=prev_msg["content"]))
+        else:
+            lc_messages.append(AIMessage(content=prev_msg["content"]))
+    lc_messages.append(human_msg)
+
+    try:
+        response = llm.invoke(lc_messages)
+        ai_reply = response.content
+        st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+    except Exception as e:
+        error_msg = f"發生錯誤: {e}"
+        st.session_state.messages.append({"role": "assistant", "content": f"❌ {error_msg}"})
+
+    # 儲存 session
+    save_session(
+        st.session_state.current_session_id,
+        st.session_state.messages,
+        st.session_state.session_title,
+    )
+    # 清除暫存
+    del st.session_state.confirm_edit_index
+    del st.session_state.edited_text
+    st.rerun()
 
 # --- 使用者輸入 ---
 user_text = st.chat_input("輸入訊息...")

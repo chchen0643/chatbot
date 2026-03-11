@@ -10,3 +10,5 @@ __pycache__/
 venv/
 
 .DS_Store    # Mac 作業系統中的隱藏資料夾管理文件
+
+chat_logs/
